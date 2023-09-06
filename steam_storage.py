@@ -6,6 +6,7 @@ from math import pow
 from os import listdir, remove, path
 from sys import argv
 from typing import Callable
+import re
 
 
 class Command:
@@ -32,37 +33,40 @@ for i in libraries:
 
 
 class Game:
-    def __init__(self, lib, acf):
+    def __init__(self, lib, acf) -> None:
         self.acf = acf
         self.lib = lib
-        text = open(libraries[lib] + acf).read()
-        self.data = text.split("\"")
+        self.contents = open(libraries[lib] + acf).read().split("\n")
 
     def get(self, attrib):
-        return self.data[self.data.index(attrib) + 2]
-
+        for line in self.contents:
+            search = re.search("\t+\"" + attrib + "\"\t+\"(.+)\"", line)
+            if search:
+                return search[1]
+    
     def get_path(self):
-        return libraries[self.lib] + "common/" + self.get("installdir")
-
-    def get_target_path(self, new_lib):
-        return libraries[new_lib] + "common/" + self.get("installdir")
+        return path.join(libraries[self.lib], "common", self.get("installdir"))
 
     def get_acf(self):
-        return libraries[self.lib] + self.acf
-
-    def get_target_acf(self, new_lib):
-        return libraries[new_lib] + self.acf
+        return path.join(libraries[self.lib], self.acf)
 
     def get_size(self):
-        return round(int(self.get("SizeOnDisk")) / pow(1000, 3), 2)
+        bytes = int(self.get("SizeOnDisk"))
+        gb = (bytes / pow(1024, 3))
+        return round(gb, 2)
 
+    def __get_target_path(self, new_lib):
+        return path.join(libraries[new_lib], "common", self.get("installdir"))
+    
+    def __get_target_acf(self, new_lib):
+        return path.join(libraries[new_lib], self.acf)
+    
     def move(self, new_lib):
-        shutil.move(self.get_acf(), self.get_target_acf(new_lib))
-        shutil.move(self.get_path(), self.get_target_path(new_lib))
+        shutil.move(self.get_acf(), self.__get_target_acf(new_lib))
+        shutil.move(self.get_path(), self.__get_target_path(new_lib))
 
     def __repr__(self):
         return "Game: " + self.acf
-
 
 try:
     compat = config["CompatData"]
@@ -71,37 +75,45 @@ except KeyError:
 
 reserve = float(config["Settings"]["Reserve"])
 
-acf_files = []
-for library in libraries:
-    _acf_files = [x for x in listdir(libraries[library]) if ".acf" in x]
+acf_files = [] # list of steam .acf files 
+for library in libraries: # add .acf files from each library to acf_files
+    _acf_files = [x for x in listdir(libraries[library]) if x.endswith(".acf")]
     for file in _acf_files:
         acf_files.append(Game(library, file))
 
 
 def list_games(params=None):
-    if not params:
+    if not params: # if no library parameter supplied check all
         libraries_to_check = [x for x in libraries]
     else:
-        libraries_to_check = params
+        libraries_to_check = params # check libraries in params
+
     print("Libraries")
     for i in libraries_to_check:
-        total, used, free = shutil.disk_usage(libraries[i])
+        _, _, free = shutil.disk_usage(libraries[i]) # calculate and show free space in each library
         print(i, ":", round(free / pow(1024, 3), 2), "GB free")
+
     print("\n\nGames:")
-    for game in [acf for acf in acf_files if acf.lib in libraries_to_check]:
+    for game in [acf for acf in acf_files if acf.lib in libraries_to_check]: # print appid, name, library, and size of each game
         print(game.get("appid"), game.get("name"), "on", game.lib, game.get_size(), "GB")
 
 
 def move(params=None):
-    if not params:
-        params = [input("Enter Game ID / Name: "), input("Enter Destination Library: ")]
+    if not params or len(params) != 2:
+        # if 2 params aren't supplied ask for the game ID and destination
+        params = [input("Enter Game ID / Name: "), input("Enter Destination Library: ")] 
     game_id = params[0]
-    source = [game for game in acf_files if game.get("appid") == game_id or game.get("name") == game_id]
-    if source:
+    source = [game for game in acf_files if game.get("appid") == game_id or game.get("name") == game_id] # get matching games
+
+    if source and len(source) == 1:
         source = source[0]
+    elif source:
+        print("Game is ambiguous.")
     else:
         print("Game not found.")
         return
+    
+    # if game and destination are valid move the game
     dest = params[1].lower()
     if dest in libraries:
         print("Moving Game...")
@@ -116,9 +128,15 @@ def delete(params=None):
     if not params:
         params = [input("Enter Game ID / Name: ")]
     game_id = params[0]
-    source = [game for game in acf_files if game.get("appid") == game_id or game.get("name") == game_id]
-    if source:
+
+    source = [game for game in acf_files if game.get("appid") == game_id or game.get("name") == game_id] # get matching games
+    if source and len(source) == 1:
         source = source[0]
+    else: 
+        print("Game is invalid or ambiguous")
+        return
+    
+    # if game is valid then delete acf and directory
     print("Deleting...")
     remove(source.get_acf())
     shutil.rmtree(source.get_path())
@@ -130,11 +148,16 @@ def optimise(params=None):
         params = [input("Source Library: "), input("Destination Library: ")]
     source = params[0].lower()
     dest = params[1].lower()
+
     _, _, free = shutil.disk_usage(libraries[dest])
     free_gb = round(free / pow(1024, 3), 2)
     free_gb -= reserve
+
+    # get games and sizes in source library and sort by reverse size
     games = [(acf, acf.get_size()) for acf in acf_files if acf.lib == source]
     games = sorted(games, key=lambda x: x[1], reverse=True)
+
+    # move games until the reserve space is met in the destination library
     for acf, size in games:
         if size <= free_gb:
             if dest in libraries:
@@ -159,7 +182,7 @@ move_command = Command("move", "m", "Move a game", move)
 list_command = Command("list", "l", "List games on all libraries", list_games)
 commands: {Command} = {help_command, list_command, move_command, delete_command, optimise_command, compat_command}
 
-
+# list all commands
 def list_help(params=None):
     if params is None:
         pass
@@ -177,8 +200,9 @@ if len(args) == 0:
     args = ["-h"]
 
 cmd = args[0]
-functions = [x.fun for x in commands if cmd == "-" + x.short or cmd == "--" + x.long]
+functions = [x.fun for x in commands if re.search("(-"+x.short+"|--"+x.long+")", cmd)]
 
+# run command or print help
 if not functions:
     print("Command", cmd, "not found.")
     functions = [list_help]
